@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bass-Driven Brightness</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background-color: black;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: sans-serif;
+      color: white;
+    }
+    #status {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="status">Initializing microphone...</div>
+  <script>
+    // ----- CONSTANTS for Audio Processing -----
+    // (Only the ones needed for this basic example)
+    const TARGET_FREQS = [35, 40, 45, 50, 55];  // Bass frequencies in Hz
+    const BRIGHTNESS_GAIN = 1.6;                 // Boost factor for brightness
+    const CONTROL_SENSITIVITY = 1.0;             // Multiplier for sensitivity
+    const SMOOTHING_FACTOR = 0.9;                // For basic smoothing of brightness
+    
+    // We'll use a higher FFT size to get better resolution at low frequencies.
+    const FFT_SIZE = 2048;
+    
+    let audioContext, analyser, frequencyData;
+    let smoothedBrightness = 0; // For smoothing brightness updates
+    
+    // Setup the audio processing graph.
+    async function initAudio() {
+      try {
+        // Get access to the microphone.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        document.getElementById('status').textContent = 'Microphone connected';
+        
+        // Create an AudioContext and AnalyserNode.
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = FFT_SIZE;
+        analyser.smoothingTimeConstant = 0.8;  // Extra smoothing on the FFT results
+        
+        // Create a source from the microphone stream and connect it to the analyser.
+        const source = audioContext.createMediaStreamSource(stream);
+        source.connect(analyser);
+        
+        // Prepare the data array to hold frequency data.
+        frequencyData = new Uint8Array(analyser.frequencyBinCount);
+        
+        // Start the update loop.
+        updateBrightness();
+      } catch (err) {
+        console.error('Error accessing microphone:', err);
+        document.getElementById('status').textContent = 'Error accessing microphone.';
+      }
+    }
+    
+    // Calculate brightness from the bass frequencies.
+    function updateBrightness() {
+      // Get the latest frequency data.
+      analyser.getByteFrequencyData(frequencyData);
+      
+      // Determine frequency resolution (Hz per bin)
+      const sampleRate = audioContext.sampleRate;
+      const resolution = sampleRate / analyser.fftSize; // Hz per bin
+      
+      // For each target bass frequency, find the closest FFT bin value.
+      let sum = 0;
+      TARGET_FREQS.forEach(freq => {
+        // Calculate the index for this frequency.
+        let index = Math.round(freq / resolution);
+        // Clamp index in case it goes out-of-bound.
+        index = Math.min(index, frequencyData.length - 1);
+        sum += frequencyData[index];
+      });
+      
+      // Average amplitude across our target frequencies.
+      const avgAmplitude = sum / TARGET_FREQS.length;
+      
+      // Compute brightness value (0 to 1) based on the average amplitude.
+      // The division by 255 normalizes the amplitude from the analyser.
+      let brightness = (avgAmplitude * BRIGHTNESS_GAIN / 255) * CONTROL_SENSITIVITY;
+      brightness = Math.min(brightness, 1.0); // Clamp to maximum 1.0
+      
+      // Smooth the brightness changes.
+      smoothedBrightness = (smoothedBrightness * SMOOTHING_FACTOR) + (brightness * (1 - SMOOTHING_FACTOR));
+      
+      // Convert brightness to a 0-255 value for RGB.
+      const brightnessValue = Math.floor(smoothedBrightness * 255);
+      
+      // Update the background color to reflect the bass power.
+      document.body.style.backgroundColor = `rgb(${brightnessValue}, ${brightnessValue}, ${brightnessValue})`;
+      
+      // Update status text.
+      document.getElementById('status').textContent = `Bass brightness: ${brightnessValue}`;
+      
+      // Schedule the next update.
+      requestAnimationFrame(updateBrightness);
+    }
+    
+    // Start the audio processing on page load.
+    window.addEventListener('load', initAudio);
+  </script>
+</body>
+</html>
