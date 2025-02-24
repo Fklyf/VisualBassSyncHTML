@@ -18,31 +18,35 @@
       top: 0;
       left: 0;
     }
-    /* The brightness display is always centered */
+    /* Brightness display styling */
     #brightnessDisplay {
       position: absolute;
-      top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      font-size: var(--brightness-font-size);
+      font-size: 72px;
       text-align: center;
+      transition: opacity 0.5s;
     }
-    /* Connect button at the bottom center */
-    #connectBtn {
+    /* Connect button container at the bottom center */
+    #connectContainer {
       position: absolute;
       bottom: 20px;
       left: 50%;
       transform: translateX(-50%);
+    }
+    /* Connect button styling */
+    #connectBtn {
       font-size: 20px;
       padding: 10px 20px;
       cursor: pointer;
+      transition: opacity 0.5s;
     }
     /* FPS counter in the top right corner */
     #fpsCounter {
       position: absolute;
       top: 10px;
       right: 10px;
-      font-size: var(--fps-font-size);
+      font-size: 24px;
       background-color: rgba(0, 0, 0, 0.5);
       padding: 5px 10px;
       border-radius: 5px;
@@ -52,40 +56,43 @@
 <body>
   <canvas id="visualCanvas"></canvas>
   <div id="brightnessDisplay">Brightness: 0%</div>
-  <button id="connectBtn">Connect Microphone</button>
+  <div id="connectContainer">
+    <button id="connectBtn">Connect Microphone</button>
+  </div>
   <div id="fpsCounter">FPS: 0</div>
 
   <script>
-    // ----- CONSTANTS -----
-    const BRIGHTNESS_FONT_SIZE = 72; // Brightness text font size in pixels
-    const FPS_FONT_SIZE = 24;        // FPS counter font size in pixels
-    const HUE_CYCLE_RATE = 0.009;      // Hue cycle rate (normalized units per second)
-    const TARGET_FREQS = [35, 40, 45, 50, 55];  // Bass frequencies (Hz)
-    const BRIGHTNESS_GAIN = 1.0;       // Boost factor for brightness calculation
-    const CONTROL_SENSITIVITY = 1.0;   // Sensitivity multiplier
-    const SMOOTHING_FACTOR = 0.6;      // Smoothing factor for brightness transitions
-    const FFT_SIZE = 256;            // FFT size for audio analysis
-    const DEFAULT_SCALE_FACTOR = 100; // Base scale for cube
-    const MAX_SCALE_FACTOR = 2;       // Additional scaling factor for cube
-    const CONTROL_BRIGHTNESS_FLOOR = 0.2; // Minimum brightness for cube
+    // ----------------- CONSTANTS -----------------
+    // Bass frequency range to focus on:
+    const LOW_BASS_FREQ = 25;
+    const HIGH_BASS_FREQ = 55;
 
-    // Set CSS variables for font sizes.
-    document.documentElement.style.setProperty('--brightness-font-size', BRIGHTNESS_FONT_SIZE + 'px');
-    document.documentElement.style.setProperty('--fps-font-size', FPS_FONT_SIZE + 'px');
+    // Visualization & analysis settings
+    const FFT_SIZE = 4096;            // Higher = better low-frequency resolution
+    const SMOOTHING_FACTOR = 0.6;       // Smooth out brightness changes
+    const BRIGHTNESS_GAIN = 1.0;        // Overall boost for brightness
+    const CONTROL_SENSITIVITY = 1.0;    // Additional multiplier
+    const BRIGHTNESS_OFFSET = 0.5;      // Offset added to brightness calculation
+    const HUE_CYCLE_RATE = 0.009;       // Speed at which hue cycles
+    const DEFAULT_SCALE_FACTOR = 275;   // Base scale for the cube (increase to enlarge)
+    const CUBE_EDGE_THICKNESS = 4;      // Thickness of the cube's edges (bars)
 
+    // Brightness display vertical position (percentage from the top)
+    const BRIGHTNESS_DISPLAY_TOP = 15;
+
+    // ----------------- GLOBALS -----------------
     let audioContext, analyser, frequencyData;
-    let smoothedBrightness = 0;  // Running brightness value (0 to 1)
-    let hue = 0;                 // Normalized hue (0 to 1) for the text color
+    let smoothedBrightness = 0; // Running brightness (0..1)
+    let hue = 0;                // Normalized hue (0..1)
 
     let lastFrameTime = performance.now();
     let lastFpsUpdateTime = performance.now();
     let frameCount = 0;
 
-    let animationFrameId;
-
-    // Set up canvas for cube visualization.
+    // ----------------- CANVAS SETUP -----------------
     const canvas = document.getElementById('visualCanvas');
     const ctx = canvas.getContext('2d');
+
     function resizeCanvas() {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -93,7 +100,12 @@
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // Define cube vertices.
+    // ----------------- BRIGHTNESS DISPLAY SETUP -----------------
+    const brightnessDisplay = document.getElementById('brightnessDisplay');
+    // Set vertical position using the constant.
+    brightnessDisplay.style.top = BRIGHTNESS_DISPLAY_TOP + '%';
+
+    // ----------------- CUBE VERTICES -----------------
     const cubeVertices = [
       [-1, -1,  1],
       [ 1, -1,  1],
@@ -105,48 +117,53 @@
       [-1,  1, -1]
     ];
 
-    // Function to rotate a 3D point around the Z, Y, and X axes (using the same angle for each).
+    // ----------------- 3D TRANSFORM UTILS -----------------
     function rotatePoint(point, angle) {
       const sin = Math.sin(angle);
       const cos = Math.cos(angle);
+
       // Rotation around Z
       let x = point[0] * cos - point[1] * sin;
       let y = point[0] * sin + point[1] * cos;
       let z = point[2];
+
       // Rotation around Y
-      let x2 = x * cos + z * sin;
-      let y2 = y;
-      let z2 = -x * sin + z * cos;
+      const x2 = x * cos + z * sin;
+      const y2 = y;
+      const z2 = -x * sin + z * cos;
+
       // Rotation around X
-      let x3 = x2;
-      let y3 = y2 * cos - z2 * sin;
-      let z3 = y2 * sin + z2 * cos;
+      const x3 = x2;
+      const y3 = y2 * cos - z2 * sin;
+      const z3 = y2 * sin + z2 * cos;
+
       return [x3, y3, z3];
     }
 
-    // Function to convert HSV to RGB. (h, s, v in [0,1]; returns [r, g, b] in 0-255.)
+    // Convert HSV -> RGB. h, s, v in [0,1]. Returns [r, g, b] in [0,255].
     function hsvToRgb(h, s, v) {
       let r, g, b;
-      let i = Math.floor(h * 6);
-      let f = h * 6 - i;
-      let p = v * (1 - s);
-      let q = v * (1 - f * s);
-      let t = v * (1 - (1 - f) * s);
+      const i = Math.floor(h * 6);
+      const f = h * 6 - i;
+      const p = v * (1 - s);
+      const q = v * (1 - f * s);
+      const t = v * (1 - (1 - f) * s);
       switch (i % 6) {
-        case 0: r = v, g = t, b = p; break;
-        case 1: r = q, g = v, b = p; break;
-        case 2: r = p, g = v, b = t; break;
-        case 3: r = p, g = q, b = v; break;
-        case 4: r = t, g = p, b = v; break;
-        case 5: r = v, g = p, b = q; break;
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        case 5: r = v; g = p; b = q; break;
       }
       return [r * 255, g * 255, b * 255];
     }
 
-    // Function to draw the cube.
+    // ----------------- DRAW THE CUBE -----------------
     function drawCube(ctx, centerX, centerY, angle, scale, lineColor) {
       const projectedPoints = [];
-      // For each vertex, apply rotation and perspective projection.
+
+      // Rotate and project each vertex.
       for (let i = 0; i < cubeVertices.length; i++) {
         const rotated = rotatePoint(cubeVertices[i], angle);
         let z = rotated[2] + 5; // Offset to avoid division by zero.
@@ -156,51 +173,63 @@
         const yProjected = rotated[1] * perspectiveScale;
         const x = xProjected + centerX;
         const y = yProjected + centerY;
-        projectedPoints.push({ x: x, y: y });
+        projectedPoints.push({ x, y });
 
-        // Draw vertex as a small circle.
+        // Draw vertex
         ctx.fillStyle = lineColor;
         ctx.beginPath();
         ctx.arc(x, y, 5, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Helper function to draw a line between two points.
+      // Helper to connect two points with adjustable thickness.
       function connectPoints(i, j) {
         ctx.strokeStyle = lineColor;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = CUBE_EDGE_THICKNESS;
         ctx.beginPath();
         ctx.moveTo(projectedPoints[i].x, projectedPoints[i].y);
         ctx.lineTo(projectedPoints[j].x, projectedPoints[j].y);
         ctx.stroke();
       }
 
-      // Draw cube edges:
-      // Front face, back face, and connecting edges.
+      // Draw cube edges: front, back, and sides.
       for (let p = 0; p < 4; p++) {
         connectPoints(p, (p + 1) % 4);         // Front face
         connectPoints(p + 4, ((p + 1) % 4) + 4); // Back face
-        connectPoints(p, p + 4);                 // Sides connecting front and back
+        connectPoints(p, p + 4);                 // Connecting sides
       }
     }
 
-    // Initialize audio processing when the user clicks the Connect Microphone button.
+    // ----------------- AUDIO INITIALIZATION -----------------
     async function initAudio() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        document.getElementById('connectBtn').style.display = 'none';
+
+        // Fade out the connect button.
+        const connectBtn = document.getElementById('connectBtn');
+        connectBtn.style.opacity = 0;
+
+        // Show button on hover.
+        const connectContainer = document.getElementById('connectContainer');
+        connectContainer.addEventListener('mouseenter', () => {
+          connectBtn.style.opacity = 1;
+        });
+        connectContainer.addEventListener('mouseleave', () => {
+          connectBtn.style.opacity = 0;
+        });
 
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
         analyser.fftSize = FFT_SIZE;
         analyser.smoothingTimeConstant = 0.8;
 
+        // Connect mic -> analyser.
         const source = audioContext.createMediaStreamSource(stream);
         source.connect(analyser);
 
         frequencyData = new Uint8Array(analyser.frequencyBinCount);
 
-        // Start the update loop.
+        // Start the main visualization loop.
         update();
       } catch (err) {
         console.error('Error accessing microphone:', err);
@@ -208,13 +237,13 @@
       }
     }
 
-    // The update loop: handles audio processing, hue cycling, FPS counting, and cube drawing.
+    // ----------------- MAIN LOOP -----------------
     function update() {
       const now = performance.now();
-      const deltaTime = (now - lastFrameTime) / 1000; // in seconds
+      const deltaTime = (now - lastFrameTime) / 1000;
       lastFrameTime = now;
 
-      // Update hue using the defined cycle rate.
+      // Cycle hue.
       hue = (hue + HUE_CYCLE_RATE * deltaTime) % 1;
 
       if (analyser) {
@@ -222,60 +251,62 @@
         const sampleRate = audioContext.sampleRate;
         const resolution = sampleRate / analyser.fftSize; // Hz per FFT bin
 
+        // Determine FFT bin indices for our bass range.
+        let lowBin = Math.round(LOW_BASS_FREQ / resolution);
+        let highBin = Math.round(HIGH_BASS_FREQ / resolution);
+        lowBin = Math.max(0, lowBin);
+        highBin = Math.min(highBin, frequencyData.length - 1);
+
+        // Sum amplitude over bins in the bass range.
         let sum = 0;
-        TARGET_FREQS.forEach(freq => {
-          let index = Math.round(freq / resolution);
-          index = Math.min(index, frequencyData.length - 1);
-          sum += frequencyData[index];
-        });
-        const avgAmplitude = sum / TARGET_FREQS.length;
-        let brightness = (avgAmplitude * BRIGHTNESS_GAIN / 255) * CONTROL_SENSITIVITY;
+        for (let i = lowBin; i <= highBin; i++) {
+          sum += frequencyData[i];
+        }
+        const numBins = highBin - lowBin + 1;
+        const avgAmplitude = sum / numBins;
+
+        // Calculate brightness (0 to 1) from the bass amplitude.
+        let brightness = ((avgAmplitude / 255) * BRIGHTNESS_GAIN * CONTROL_SENSITIVITY) + BRIGHTNESS_OFFSET;
         brightness = Math.min(brightness, 1.0);
 
-        // Smooth the brightness transitions.
+        // Smooth brightness transitions.
         smoothedBrightness = (smoothedBrightness * SMOOTHING_FACTOR) + (brightness * (1 - SMOOTHING_FACTOR));
-
-        // Convert brightness to a percentage.
         const brightnessPercent = Math.floor(smoothedBrightness * 100);
 
-        // Update the brightness display text and set its color based on the cycling hue.
-        const brightnessDisplay = document.getElementById('brightnessDisplay');
+        // Update brightness display.
         brightnessDisplay.textContent = `Brightness: ${brightnessPercent}%`;
         brightnessDisplay.style.color = `hsl(${hue * 360}, 100%, 50%)`;
+        brightnessDisplay.style.opacity = brightnessPercent === 0 ? 0 : 1;
+
+        // Draw the cube only if brightness > 0.
+        if (brightnessPercent > 0) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const minDimension = Math.min(canvas.width, canvas.height);
+          // Use DEFAULT_SCALE_FACTOR to adjust overall cube size.
+          const cubeScale = (DEFAULT_SCALE_FACTOR * (smoothedBrightness * 2)) * (minDimension / 800);
+          const angle = now * 0.0010;
+          const [r, g, b] = hsvToRgb(hue, 1, smoothedBrightness);
+          const lineColor = `rgb(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)})`;
+          const centerX = canvas.width / 2;
+          const centerY = canvas.height / 2;
+          drawCube(ctx, centerX, centerY, angle, cubeScale, lineColor);
+        } else {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
       }
 
-      // FPS counter: update every second.
+      // Update FPS counter.
       frameCount++;
       if (now - lastFpsUpdateTime >= 1000) {
-        const fps = frameCount;
-        document.getElementById('fpsCounter').textContent = `FPS: ${fps}`;
+        document.getElementById('fpsCounter').textContent = `FPS: ${frameCount}`;
         frameCount = 0;
         lastFpsUpdateTime = now;
       }
 
-      // Cube visualization.
-      // Clear the canvas.
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      // Calculate cube scale based on brightness and canvas size.
-      const minDimension = Math.min(canvas.width, canvas.height);
-      const cubeScale = (DEFAULT_SCALE_FACTOR * (smoothedBrightness * MAX_SCALE_FACTOR)) * (minDimension / 800);
-      // Calculate cube rotation angle based on time.
-      const angle = now * 0.0010;
-      // Determine cube line color using HSV to RGB conversion.
-      const brightnessForCube = Math.max(smoothedBrightness * CONTROL_SENSITIVITY, CONTROL_BRIGHTNESS_FLOOR);
-      const [r, g, b] = hsvToRgb(hue, 1, brightnessForCube);
-      const lineColor = `rgb(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)})`;
-      // Center of the canvas.
-      const centerX = canvas.width / 2;
-      const centerY = canvas.height / 2;
-      // Draw the cube.
-      drawCube(ctx, centerX, centerY, angle, cubeScale, lineColor);
-
-      // Continue the update loop.
-      animationFrameId = requestAnimationFrame(update);
+      requestAnimationFrame(update);
     }
 
-    // Set up the Connect Microphone button.
+    // ----------------- EVENT LISTENERS -----------------
     document.getElementById('connectBtn').addEventListener('click', initAudio);
   </script>
 </body>
