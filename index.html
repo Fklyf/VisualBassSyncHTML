@@ -7,110 +7,147 @@
     html, body {
       margin: 0;
       height: 100%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
       background-color: black;
       color: white;
       font-family: sans-serif;
+      overflow: hidden;
     }
+    /* The brightness display is always centered */
     #brightnessDisplay {
-      font-size: 56px;
-      margin-bottom: 20px;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: var(--brightness-font-size);
       text-align: center;
     }
+    /* Connect button at the bottom center */
     #connectBtn {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
       font-size: 20px;
       padding: 10px 20px;
       cursor: pointer;
     }
-    #status {
-      margin-top: 20px;
-      font-size: 16px;
+    /* FPS counter in the top right corner */
+    #fpsCounter {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      font-size: var(--fps-font-size);
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 5px 10px;
+      border-radius: 5px;
     }
   </style>
 </head>
 <body>
-  <div id="brightnessDisplay">Brightness: 0</div>
+  <div id="brightnessDisplay">Brightness: 0%</div>
   <button id="connectBtn">Connect Microphone</button>
-  <div id="status">Waiting for microphone connection...</div>
-
+  <div id="fpsCounter">FPS: 0</div>
+  
   <script>
-    // ----- CONSTANTS for Audio Processing -----
-    const TARGET_FREQS = [35, 40, 45, 50, 55];  // Bass frequencies in Hz
-    const BRIGHTNESS_GAIN = 1.6;                 // Boost factor for brightness
-    const CONTROL_SENSITIVITY = 1.0;             // Multiplier for sensitivity
-    const SMOOTHING_FACTOR = 0.9;                // For smoothing brightness changes
-    const FFT_SIZE = 2048;                       // Higher FFT size for better resolution at low frequencies
+    // ----- CONSTANTS -----
+    const BRIGHTNESS_FONT_SIZE = 56; // Brightness text font size in pixels
+    const FPS_FONT_SIZE = 16;        // FPS counter font size in pixels
+    const HUE_CYCLE_RATE = 0.004;      // Hue cycle rate (normalized units per second)
+    const TARGET_FREQS = [35, 40, 45, 50, 55];  // Bass frequencies (Hz)
+    const BRIGHTNESS_GAIN = 1.6;       // Boost factor for brightness calculation
+    const CONTROL_SENSITIVITY = 1.0;   // Sensitivity multiplier
+    const SMOOTHING_FACTOR = 0.9;      // Smoothing factor for brightness transitions
+    const FFT_SIZE = 2048;           // FFT size for audio analysis
+    
+    // Set CSS variables for font sizes.
+    document.documentElement.style.setProperty('--brightness-font-size', BRIGHTNESS_FONT_SIZE + 'px');
+    document.documentElement.style.setProperty('--fps-font-size', FPS_FONT_SIZE + 'px');
     
     let audioContext, analyser, frequencyData;
-    let smoothedBrightness = 0;  // Running smoothed brightness value
+    let smoothedBrightness = 0;  // Running brightness value (0 to 1)
+    let hue = 0;                 // Normalized hue (0 to 1) for the text color
+    
+    let lastFrameTime = performance.now();
+    let lastFpsUpdateTime = performance.now();
+    let frameCount = 0;
+    
     let animationFrameId;
     
-    // Initialize audio processing when the user clicks the button.
+    // Initialize audio processing when the user clicks the Connect Microphone button.
     async function initAudio() {
       try {
-        // Request access to the microphone.
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        document.getElementById('status').textContent = 'Microphone connected';
+        document.getElementById('connectBtn').style.display = 'none';
         
-        // Create the audio context and analyser node.
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
         analyser.fftSize = FFT_SIZE;
         analyser.smoothingTimeConstant = 0.8;
         
-        // Connect the microphone stream to the analyser.
         const source = audioContext.createMediaStreamSource(stream);
         source.connect(analyser);
         
-        // Prepare the frequency data array.
         frequencyData = new Uint8Array(analyser.frequencyBinCount);
         
-        // Start updating the brightness.
-        updateBrightness();
+        // Start the update loop.
+        update();
       } catch (err) {
         console.error('Error accessing microphone:', err);
-        document.getElementById('status').textContent = 'Error accessing microphone.';
+        document.getElementById('connectBtn').textContent = 'Error connecting microphone';
       }
     }
     
-    // Function to update brightness based on bass frequencies.
-    function updateBrightness() {
-      analyser.getByteFrequencyData(frequencyData);
-      const sampleRate = audioContext.sampleRate;
-      const resolution = sampleRate / analyser.fftSize; // Hz per FFT bin
+    // The update loop: handles audio processing, hue cycling, and FPS counting.
+    function update() {
+      const now = performance.now();
+      const deltaTime = (now - lastFrameTime) / 1000; // in seconds
+      lastFrameTime = now;
       
-      let sum = 0;
-      TARGET_FREQS.forEach(freq => {
-        let index = Math.round(freq / resolution);
-        index = Math.min(index, frequencyData.length - 1);
-        sum += frequencyData[index];
-      });
+      // Update hue using the defined cycle rate.
+      hue = (hue + HUE_CYCLE_RATE * deltaTime) % 1;
       
-      // Average amplitude across target bass frequencies.
-      const avgAmplitude = sum / TARGET_FREQS.length;
-      let brightness = (avgAmplitude * BRIGHTNESS_GAIN / 255) * CONTROL_SENSITIVITY;
-      brightness = Math.min(brightness, 1.0);
+      if (analyser) {
+        analyser.getByteFrequencyData(frequencyData);
+        const sampleRate = audioContext.sampleRate;
+        const resolution = sampleRate / analyser.fftSize; // Hz per FFT bin
       
-      // Smooth the brightness transitions.
-      smoothedBrightness = (smoothedBrightness * SMOOTHING_FACTOR) + (brightness * (1 - SMOOTHING_FACTOR));
-      const brightnessValue = Math.floor(smoothedBrightness * 255);
+        let sum = 0;
+        TARGET_FREQS.forEach(freq => {
+          let index = Math.round(freq / resolution);
+          index = Math.min(index, frequencyData.length - 1);
+          sum += frequencyData[index];
+        });
+        const avgAmplitude = sum / TARGET_FREQS.length;
+        let brightness = (avgAmplitude * BRIGHTNESS_GAIN / 255) * CONTROL_SENSITIVITY;
+        brightness = Math.min(brightness, 1.0);
       
-      // Update the background color and display text.
-      document.body.style.backgroundColor = `rgb(${brightnessValue}, ${brightnessValue}, ${brightnessValue})`;
-      document.getElementById('brightnessDisplay').textContent = `Brightness: ${brightnessValue}`;
+        // Smooth the brightness transitions.
+        smoothedBrightness = (smoothedBrightness * SMOOTHING_FACTOR) + (brightness * (1 - SMOOTHING_FACTOR));
       
-      // Continue the update loop.
-      animationFrameId = requestAnimationFrame(updateBrightness);
+        // Convert brightness to a percentage.
+        const brightnessPercent = Math.floor(smoothedBrightness * 100);
+      
+        // Update the brightness display text and set its color based on the cycling hue.
+        const brightnessDisplay = document.getElementById('brightnessDisplay');
+        brightnessDisplay.textContent = `Brightness: ${brightnessPercent}%`;
+        brightnessDisplay.style.color = `hsl(${hue * 360}, 100%, 50%)`;
+      }
+      
+      // FPS counter: update every second.
+      frameCount++;
+      if (now - lastFpsUpdateTime >= 1000) {
+        const fps = frameCount;
+        document.getElementById('fpsCounter').textContent = `FPS: ${fps}`;
+        frameCount = 0;
+        lastFpsUpdateTime = now;
+      }
+      
+      // Continue the update loop with requestAnimationFrame.
+      animationFrameId = requestAnimationFrame(update);
     }
     
-    // Set up the button to start audio processing.
-    document.getElementById('connectBtn').addEventListener('click', function() {
-      initAudio();
-      this.style.display = 'none'; // Hide the button after connecting.
-    });
+    // Set up the Connect Microphone button.
+    document.getElementById('connectBtn').addEventListener('click', initAudio);
   </script>
 </body>
 </html>
